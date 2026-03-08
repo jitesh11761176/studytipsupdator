@@ -244,6 +244,15 @@ with st.sidebar:
         st.session_state["quick_prompt"] = "Auto-fix everything: link drafts, place in nav, create missing pages"
 
     st.markdown("---")
+    st.subheader("📚 Class Page Generator")
+    st.caption("One-click beautiful pages")
+
+    gen_class = st.selectbox("Select Class", list(range(1, 13)), index=2, key="sidebar_class_select")
+    if st.button(f"✨ Generate Class {gen_class} Page", use_container_width=True):
+        st.session_state["quick_prompt"] = f"Create a beautiful full-width page for Class {gen_class} Subjects and Topics — similar to the Class 1 page at https://studytips.in/class-1-subjects-and-topics/. Include all subjects (English, Mathematics, Hindi, EVS/Science, Computer, Social Science as applicable), with ALL chapter/topic lists for each subject, worksheets section, and study resources. Make it comprehensive and SEO-optimised."
+        st.session_state["use_smart_generate"] = True
+
+    st.markdown("---")
     st.caption("All actions create DRAFTS for your approval")
 
 # ------------------------------------------------------------------
@@ -272,10 +281,20 @@ with tabs[0]:
     agent_prompt = st.text_input(
         "🤖 Agent command",
         value=default_prompt,
-        placeholder="e.g. Write a blog post about study tips for Class 10, Run SEO audit…",
+        placeholder="e.g. Write a blog post about study tips for Class 10, Create a Class 5 page like Class 1…",
         key="studio_agent_cmd",
     )
-    if agent_prompt and st.button("🚀 Execute Command", type="primary"):
+    cmd_col1, cmd_col2 = st.columns([1, 1])
+    with cmd_col1:
+        exec_agent_btn = st.button("🚀 Execute Command", type="primary")
+    with cmd_col2:
+        gen_smart_btn = st.button("✨ Smart Generate (Beautiful Page)", type="secondary")
+
+    # Auto-trigger smart generate from sidebar class page generator
+    if st.session_state.pop("use_smart_generate", False) and agent_prompt:
+        gen_smart_btn = True
+
+    if agent_prompt and exec_agent_btn:
         agent = _get_agent()
         with st.spinner("Agent is working…"):
             try:
@@ -304,6 +323,85 @@ with tabs[0]:
                         st.markdown(result.get("formatted_output", ""))
             except Exception as exc:
                 st.error(f"Error: {exc}")
+
+    if agent_prompt and gen_smart_btn:
+        # Smart Generate: use the rich page prompt to create beautiful styled HTML
+        with st.spinner("🎨 AI is generating a beautiful styled page…"):
+            try:
+                from agent.prompts.content_prompts import RICH_PAGE_PROMPT
+                import re as _re
+
+                brain = _get_brain_router()
+
+                # Try to fetch a reference page for context
+                reference_info = ""
+                ref_url_match = _re.search(r'(?:like|similar to|same as|based on|copy)\s+(https?://\S+)', agent_prompt, _re.IGNORECASE)
+                if ref_url_match:
+                    try:
+                        cp = _get_content_processor()
+                        ref_data = cp.process_url(ref_url_match.group(1))
+                        ref_html = ref_data.get("html_content", "") or ref_data.get("raw_text", "")
+                        if ref_html:
+                            reference_info = (
+                                f"\n\nREFERENCE PAGE (use the same structure, style, and layout but adapt content):\n"
+                                f"{ref_html[:8000]}\n"
+                            )
+                    except Exception:
+                        pass
+
+                if not reference_info:
+                    # Check if user mentions a studytips.in page
+                    ref_slug_match = _re.search(r'(?:like|similar to|same as)\s+(?:the\s+)?(?:class[\s-]?\d+|[\w-]+)\s*(?:page)?', agent_prompt, _re.IGNORECASE)
+                    if ref_slug_match:
+                        try:
+                            slug = ref_slug_match.group(0).split("like")[-1].split("similar to")[-1].split("same as")[-1].strip()
+                            slug = _re.sub(r'\s+', '-', slug.lower().strip()).rstrip('-page').strip('-')
+                            cp = _get_content_processor()
+                            ref_data = cp.process_url(f"https://studytips.in/{slug}/")
+                            ref_html = ref_data.get("html_content", "") or ref_data.get("raw_text", "")
+                            if ref_html:
+                                reference_info = (
+                                    f"\n\nREFERENCE PAGE from studytips.in/{slug}/ (replicate this structure and design):\n"
+                                    f"{ref_html[:8000]}\n"
+                                )
+                        except Exception:
+                            pass
+
+                brain_name = brain.route("create_content", priority="quality")
+                content = brain.generate(
+                    brain_name=brain_name,
+                    prompt=RICH_PAGE_PROMPT.format(
+                        user_request=agent_prompt,
+                        reference_info=reference_info,
+                    ),
+                )
+                # Clean markdown fences if AI wrapped it
+                content = _re.sub(r'^```(?:html)?\s*\n?', '', content.strip())
+                content = _re.sub(r'\n?```\s*$', '', content.strip())
+
+                # Extract title from content or prompt
+                title_match = _re.search(r'<h1[^>]*>(.*?)</h1>', content, _re.IGNORECASE | _re.DOTALL)
+                suggested_title = title_match.group(1).strip() if title_match else agent_prompt[:80]
+                # Clean HTML tags from title
+                suggested_title = _re.sub(r'<[^>]+>', '', suggested_title)
+                suggested_slug = _re.sub(r'[^a-z0-9]+', '-', suggested_title.lower()).strip('-')
+
+                st.session_state["studio_result"] = {
+                    "raw_text": content,
+                    "html_content": content,
+                    "suggested_title": suggested_title,
+                    "suggested_slug": suggested_slug,
+                    "suggested_meta_description": "",
+                    "suggested_tags": [],
+                    "suggested_headings": [],
+                    "seo_score": 0,
+                    "readability_score": 0,
+                    "word_count": len(content.split()),
+                    "image_prompt": "",
+                }
+                st.success(f"✅ Beautiful page generated! **{suggested_title}** — Preview below, then publish.")
+            except Exception as exc:
+                st.error(f"Smart generate failed: {exc}")
 
     # ---- initialise session keys ----------------------------------
     if "studio_chat" not in st.session_state:
@@ -656,9 +754,11 @@ with tabs[0]:
         st.markdown("---")
         st.markdown("### 4️⃣ Beautify & Images")
 
-        beautify_col, img_toggle_col, gen_img_col, _sp = st.columns([1, 1, 1, 1])
+        beautify_col, restyle_col, img_toggle_col, gen_img_col = st.columns([1, 1, 1, 1])
         with beautify_col:
             do_beautify = st.button("✨ Beautify Content")
+        with restyle_col:
+            do_restyle = st.button("🎨 Restyle (Beautiful CSS)")
         with img_toggle_col:
             insert_images = st.checkbox("🖼️ Auto-insert AI images", value=True)
         with gen_img_col:
@@ -674,6 +774,41 @@ with tabs[0]:
             res["html_content"] = enhanced
             st.session_state["studio_result"] = res
             st.success("✅ Content beautified!" + (" Images uploaded to Media & linked." if insert_images else ""))
+
+        if do_restyle:
+            # Restyle: take existing content and wrap it in beautiful CSS
+            with st.spinner("🎨 AI is restyling with beautiful CSS…"):
+                try:
+                    import re as _re
+                    brain = _get_brain_router()
+                    current = res.get("html_content", "") or res.get("raw_text", "")
+                    restyle_prompt = (
+                        "You are a web designer. Take the following HTML content and restyle it to look STUNNING.\n\n"
+                        "ADD a <style> block at the top with modern CSS:\n"
+                        "- Gradient hero section (blues/purples)\n"
+                        "- Card-based layouts with CSS grid\n"
+                        "- White cards with box-shadow and border-radius\n"
+                        "- Hover effects (translateY)\n"
+                        "- Colored left-border on h2 headings\n"
+                        "- Clean typography (Arial/sans-serif)\n"
+                        "- .container max-width 1200px centered\n"
+                        "- Responsive @media queries\n"
+                        "- Subject grids for card layouts\n"
+                        "- Professional color scheme\n\n"
+                        "Keep ALL the existing content text — only add/improve the HTML structure and CSS styling.\n"
+                        "Do NOT remove any content. Wrap sections in proper containers.\n\n"
+                        f"Current content:\n{current[:12000]}\n\n"
+                        "Return ONLY the restyled HTML with embedded <style>. No markdown fences."
+                    )
+                    brain_name = brain.route("create_content", priority="quality")
+                    restyled = brain.generate(brain_name=brain_name, prompt=restyle_prompt)
+                    restyled = _re.sub(r'^```(?:html)?\s*\n?', '', restyled.strip())
+                    restyled = _re.sub(r'\n?```\s*$', '', restyled.strip())
+                    res["html_content"] = restyled
+                    st.session_state["studio_result"] = res
+                    st.success("✅ Content restyled with beautiful CSS!")
+                except Exception as exc:
+                    st.error(f"Restyle failed: {exc}")
 
         if gen_standalone:
             # Generate images via AI and upload to WP media without beautifying
@@ -731,9 +866,26 @@ with tabs[0]:
                             st.success(f"Inserted {img_info['name']}")
                             st.rerun()
 
-        # Content preview
-        with st.expander("📄 Content Preview", expanded=False):
-            st.markdown(res.get("html_content", res.get("raw_text", "")), unsafe_allow_html=True)
+        # Content preview — use iframe for full CSS rendering
+        with st.expander("📄 Content Preview", expanded=True):
+            preview_html = res.get("html_content", res.get("raw_text", ""))
+            if "<style>" in preview_html or "<style " in preview_html:
+                # Rich styled content — render in iframe for proper CSS isolation
+                import base64 as _b64_prev
+                full_html = (
+                    '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+                    '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+                    '</head><body>' + preview_html + '</body></html>'
+                )
+                b64_html = _b64_prev.b64encode(full_html.encode("utf-8")).decode("utf-8")
+                st.components.v1.html(
+                    f'<iframe src="data:text/html;base64,{b64_html}" '
+                    f'style="width:100%;border:1px solid #333;border-radius:8px;" '
+                    f'height="800" frameborder="0"></iframe>',
+                    height=820,
+                )
+            else:
+                st.markdown(preview_html, unsafe_allow_html=True)
 
         # -- Post-beautification chat ---
         st.markdown("---")
@@ -811,13 +963,15 @@ with tabs[0]:
                     try:
                         from agent.core.config import load_config
                         from agent.integrations.wordpress_api import WordPressClient
+                        from agent.modules.content_processor import inline_css
                         cfg = load_config()
                         wp = WordPressClient(config=cfg.wp)
+                        # Inline CSS so styles survive WordPress sanitization
+                        publish_html = inline_css(res.get("html_content", ""))
                         if publish_type == "Page":
-                            # Wrap content with padding for full-width Elementor layout
                             page_html = (
                                 '<div style="padding:50px 120px;">'
-                                + res.get("html_content", "")
+                                + publish_html
                                 + '</div>'
                             )
                             created = wp.create_page(
@@ -827,20 +981,10 @@ with tabs[0]:
                                 status="draft",
                                 template="elementor_header_footer",
                             )
-                            # Enable Elementor builder mode on the page
-                            page_id = created.get("id")
-                            if page_id:
-                                try:
-                                    wp.update_page(page_id, meta={
-                                        "_elementor_edit_mode": "builder",
-                                        "_elementor_template_type": "wp-page",
-                                    })
-                                except Exception:
-                                    pass
                         else:
                             created = wp.create_post(
                                 title=res.get("suggested_title", "Untitled"),
-                                content=res.get("html_content", ""),
+                                content=publish_html,
                                 slug=res.get("suggested_slug", ""),
                                 status="draft",
                             )

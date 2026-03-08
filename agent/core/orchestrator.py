@@ -316,13 +316,21 @@ class StudyTipsAgent:
 
         # === Content creation ===
         if any(kw in step_lower for kw in ["write", "generate", "draft", "create post", "create article"]):
-            from agent.modules.content_engine import ContentEngine
-            engine = ContentEngine(brain_router=self.brain, config=self.config)
-            return engine.generate_outline(topic=step, keywords=[])
+            from agent.prompts.content_prompts import SMART_CONTENT_PROMPT
+            brain_name = self.brain.route("create_content", priority="quality")
+            content = self.brain.generate(
+                brain_name=brain_name,
+                prompt=SMART_CONTENT_PROMPT.format(user_request=step),
+            )
+            import re as _re
+            content = _re.sub(r'^```(?:html)?\s*\n?', '', content.strip())
+            content = _re.sub(r'\n?```\s*$', '', content.strip())
+            return content
 
         # === Page creation (with auto-parent detection) ===
         if intent == "create_page" or any(kw in step_lower for kw in ["create page", "new page"]):
             from agent.modules.site_power import SitePower
+            from agent.prompts.content_prompts import RICH_PAGE_PROMPT
             power = SitePower(brain_router=self.brain, config=self.config)
             # Extract title from step
             title = step.replace("create page", "").replace("new page", "").strip().strip('"\'')
@@ -331,10 +339,9 @@ class StudyTipsAgent:
             brain_name = self.brain.route("create_content", priority="quality")
             content = self.brain.generate(
                 brain_name=brain_name,
-                prompt=(
-                    f"Create a comprehensive page for studytips.in titled '{title}'.\n"
-                    "Write 500-800 words of SEO-optimised HTML. Include H2 headings, bullet points, CTA.\n"
-                    "Return only HTML content."
+                prompt=RICH_PAGE_PROMPT.format(
+                    user_request=title,
+                    reference_info="This is for studytips.in educational website. Create production-ready content.",
                 ),
             )
             import re as _re
@@ -441,12 +448,16 @@ class StudyTipsAgent:
         # If there is draft content, attempt to publish via WordPress
         if results.get("draft_content"):
             from agent.integrations.wordpress_api import WordPressClient
+            from agent.modules.content_processor import inline_css
             wp = WordPressClient(config=self.config.wp)
 
             # Use actual title/slug from results (Content Studio passes these)
             title = results.get("title") or f"Draft — {intent}"
             slug = results.get("slug") or ""
             status = self.config.agent.default_post_status
+
+            # Inline CSS so styles survive WordPress sanitization
+            publish_html = inline_css(results["draft_content"])
 
             # Determine post vs page: explicit publish_as > intent-based
             publish_as = results.pop("publish_as", None)
@@ -456,10 +467,9 @@ class StudyTipsAgent:
 
             try:
                 if use_page:
-                    # Wrap content with padding for full-width Elementor layout
                     padded = (
                         '<div style="padding:50px 120px;">'
-                        + results["draft_content"]
+                        + publish_html
                         + '</div>'
                     )
                     created = wp.create_page(
@@ -469,21 +479,10 @@ class StudyTipsAgent:
                         status=status,
                         template="elementor_header_footer",
                     )
-                    # Set Elementor full-width metadata so Elementor
-                    # opens the page in its builder with full width.
-                    page_id = created.get("id")
-                    if page_id:
-                        try:
-                            wp.update_page(page_id, meta={
-                                "_elementor_edit_mode": "builder",
-                                "_elementor_template_type": "wp-page",
-                            })
-                        except Exception:
-                            pass  # non-critical — template is already set
                 else:
                     created = wp.create_post(
                         title=title,
-                        content=results["draft_content"],
+                        content=publish_html,
                         slug=slug,
                         status=status,
                     )

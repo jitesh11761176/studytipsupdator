@@ -40,6 +40,91 @@ def _word_count(text: str) -> int:
     return len(text.split())
 
 
+def inline_css(html: str) -> str:
+    """Convert <style> block CSS rules to inline style attributes.
+
+    WordPress and many page builders strip <style> tags from content,
+    which causes beautifully styled previews to appear as plain text.
+    This function parses CSS rules and applies them directly as inline
+    ``style`` attributes on matching HTML elements.
+
+    Args:
+        html: HTML string potentially containing ``<style>`` blocks.
+
+    Returns:
+        HTML with CSS applied as inline styles and ``<style>`` blocks removed.
+    """
+    if "<style" not in html:
+        return html
+
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        style_tags = soup.find_all("style")
+        if not style_tags:
+            return html
+
+        css_text = "\n".join(tag.string or "" for tag in style_tags)
+
+        # Remove CSS comments
+        css_text = re.sub(r"/\*.*?\*/", "", css_text, flags=re.DOTALL)
+
+        # Flatten @media blocks: keep their inner rules (best-effort for inline)
+        css_text = re.sub(
+            r"@media[^{]*\{((?:[^{}]*\{[^{}]*\})*)\s*\}",
+            r"\1",
+            css_text,
+            flags=re.DOTALL,
+        )
+        # Remove @keyframes and other @-rules entirely
+        css_text = re.sub(
+            r"@[\w-]+[^{]*\{(?:[^{}]*\{[^{}]*\})*\s*\}",
+            "",
+            css_text,
+            flags=re.DOTALL,
+        )
+
+        # Parse selector { properties } pairs
+        rule_re = re.compile(r"([^{}]+?)\s*\{([^{}]+?)\}", re.DOTALL)
+        rules: list = []
+        for match in rule_re.finditer(css_text):
+            selectors_str = match.group(1).strip()
+            properties = re.sub(r"\s+", " ", match.group(2).strip())
+            if not properties.endswith(";"):
+                properties += ";"
+
+            for selector in selectors_str.split(","):
+                selector = selector.strip()
+                # Skip pseudo-classes / pseudo-elements (can't be inlined)
+                if not selector or any(
+                    p in selector
+                    for p in (":hover", ":focus", ":active", "::before", "::after", ":nth", ":before", ":after")
+                ):
+                    continue
+                rules.append((selector, properties))
+
+        # Apply rules to matching elements (order preserved = cascade order)
+        for selector, properties in rules:
+            try:
+                elements = soup.select(selector)
+                for el in elements:
+                    existing = el.get("style", "")
+                    if existing and not existing.rstrip().endswith(";"):
+                        existing = existing.rstrip() + "; "
+                    el["style"] = ((existing + " " + properties) if existing else properties).strip()
+            except Exception:  # noqa: BLE001
+                continue  # skip invalid / unsupported selectors
+
+        # Remove <style> tags (rules are now inlined)
+        for tag in style_tags:
+            tag.decompose()
+
+        return str(soup)
+    except Exception:  # noqa: BLE001
+        return html
+
+
 def _slugify(title: str) -> str:
     slug = title.lower()
     slug = re.sub(r"[^\w\s-]", "", slug)
