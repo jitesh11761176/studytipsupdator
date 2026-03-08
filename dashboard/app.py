@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 
 # Ensure the project root is in the path
@@ -98,6 +99,54 @@ def _get_content_processor():
             pass
         st.session_state.content_processor = ContentProcessor(brain_router=brain, wp_client=wp)
     return st.session_state.content_processor
+
+
+def _inject_internal_links(html: str, links: list) -> str:
+    """Inject suggested internal links into first matching anchor text occurrences."""
+    if not html or not links:
+        return html
+
+    updated = html
+    for item in links:
+        if not isinstance(item, dict):
+            continue
+        anchor_text = (item.get("anchor_text") or "").strip()
+        target_slug = (item.get("target_slug") or "").strip().strip("/")
+        if not anchor_text or not target_slug:
+            continue
+
+        href = f"https://studytips.in/{target_slug}/"
+        pattern = re.compile(rf"(?<![\w>])({re.escape(anchor_text)})(?![^<]*</a>)", re.IGNORECASE)
+        replacement = rf'<a href="{href}">\1</a>'
+        updated, count = pattern.subn(replacement, updated, count=1)
+        if count == 0:
+            continue
+
+    return updated
+
+
+def _inject_schema(html: str, schema_faq_jsonld: str) -> str:
+    """Append FAQ schema JSON-LD script to HTML when available."""
+    schema_text = (schema_faq_jsonld or "").strip()
+    if not schema_text:
+        return html
+
+    schema_tag = (
+        "\n<script type=\"application/ld+json\">\n"
+        f"{schema_text}\n"
+        "</script>\n"
+    )
+    if "application/ld+json" in html:
+        return html
+    return html + schema_tag
+
+
+def _build_publish_ready_content(result: dict) -> str:
+    """Build final publish-ready HTML by injecting links and schema."""
+    html = result.get("html_content", "") or result.get("raw_text", "")
+    html = _inject_internal_links(html, result.get("internal_links", []))
+    html = _inject_schema(html, result.get("schema_faq_jsonld", ""))
+    return html
 
 
 # ------------------------------------------------------------------
@@ -407,6 +456,7 @@ with tabs[0]:
                     "internal_links": power_result.get("internal_links", []),
                     "faq": power_result.get("faq", []),
                     "schema_faq_jsonld": power_result.get("schema_faq_jsonld", ""),
+                    "serp_competitors": power_result.get("serp_competitors", []),
                 }
                 if power_result.get("quality_passed"):
                     st.success(f"✅ High-quality page generated! **{suggested_title}** — Preview below, then publish.")
@@ -646,6 +696,10 @@ with tabs[0]:
                     "Passed": bool(res.get("quality_passed", False)),
                     "Rewrite Passes": int(res.get("rewrite_passes", 0)),
                 })
+
+        if res.get("serp_competitors"):
+            with st.expander("🔎 SERP Competitor Snapshot", expanded=False):
+                st.write(res.get("serp_competitors", []))
 
         with st.expander("✏️ Edit SEO Fields", expanded=True):
             res["suggested_title"] = st.text_input(
@@ -948,6 +1002,17 @@ with tabs[0]:
         # ---- 6. Publish -------------------------------------------
         st.markdown("---")
         st.markdown("### 6️⃣ Publish")
+
+        package_col1, package_col2 = st.columns([1, 2])
+        with package_col1:
+            if st.button("📦 One-Click Publish-Ready Package", use_container_width=True):
+                packaged_html = _build_publish_ready_content(res)
+                res["publish_ready_content"] = packaged_html
+                st.session_state["studio_result"] = res
+                st.success("✅ Publish-ready package created: internal links + schema injected.")
+        with package_col2:
+            st.caption("Creates final HTML package with internal links and FAQ schema auto-injected.")
+
         target_url = st.text_input(
             "Target page URL (leave blank to create new)",
             placeholder="https://studytips.in/existing-page/",
@@ -955,6 +1020,7 @@ with tabs[0]:
         pub_col1, pub_col2, pub_col3 = st.columns(3)
         with pub_col1:
             if st.button("📝 Save as Draft Post", type="primary", use_container_width=True):
+                final_content = res.get("publish_ready_content") or _build_publish_ready_content(res)
                 st.info("Draft post queued — approve in **Pending Actions** tab.")
                 st.session_state.setdefault("pending_actions", []).append(
                     {
@@ -962,7 +1028,7 @@ with tabs[0]:
                         "action_id": "studio",
                         "formatted_output": f"**Content Studio Draft**\n\nTitle: {res.get('suggested_title')}\n\nSlug: {res.get('suggested_slug')}",
                         "results": {
-                            "draft_content": res.get("html_content", ""),
+                            "draft_content": final_content,
                             "title": res.get("suggested_title", ""),
                             "slug": res.get("suggested_slug", ""),
                         },
@@ -971,6 +1037,7 @@ with tabs[0]:
                 )
         with pub_col2:
             if st.button("📄 Save as Draft Page (Elementor)", use_container_width=True):
+                final_content = res.get("publish_ready_content") or _build_publish_ready_content(res)
                 st.info("Draft page queued — approve in **Pending Actions** tab.")
                 st.session_state.setdefault("pending_actions", []).append(
                     {
@@ -978,7 +1045,7 @@ with tabs[0]:
                         "action_id": "studio",
                         "formatted_output": f"**Content Studio Draft (Elementor Page)**\n\nTitle: {res.get('suggested_title')}\n\nSlug: {res.get('suggested_slug')}",
                         "results": {
-                            "draft_content": res.get("html_content", ""),
+                            "draft_content": final_content,
                             "title": res.get("suggested_title", ""),
                             "slug": res.get("suggested_slug", ""),
                         },
@@ -996,7 +1063,8 @@ with tabs[0]:
                         cfg = load_config()
                         wp = WordPressClient(config=cfg.wp)
                         # Inline CSS so styles survive WordPress sanitization
-                        publish_html = inline_css(res.get("html_content", ""))
+                        final_content = res.get("publish_ready_content") or _build_publish_ready_content(res)
+                        publish_html = inline_css(final_content)
                         if publish_type == "Page":
                             page_html = (
                                 '<div style="padding:50px 120px;">'

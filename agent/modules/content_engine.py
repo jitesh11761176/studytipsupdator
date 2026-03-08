@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import requests
+
 logger = logging.getLogger(__name__)
 
 BLOG_POST_SYSTEM_PROMPT = (
@@ -185,6 +187,58 @@ class ContentEngine:
         }
         return self._extract_json_object(raw, default)
 
+    def _get_serp_competitor_snapshot(
+        self,
+        topic: str,
+        primary_keyword: str,
+        limit: int = 5,
+    ) -> List[Dict[str, str]]:
+        """Fetch a lightweight SERP snapshot for grounding.
+
+        Uses DuckDuckGo HTML results as a no-key fallback source so generation
+        can compare against competitor titles/snippets before drafting.
+        """
+        query = (primary_keyword or topic or "").strip()
+        if not query:
+            return []
+
+        try:
+            from bs4 import BeautifulSoup
+
+            resp = requests.get(
+                "https://duckduckgo.com/html/",
+                params={"q": query},
+                timeout=12,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+
+            items: List[Dict[str, str]] = []
+            for block in soup.select(".result"):
+                link_el = block.select_one(".result__a")
+                snip_el = block.select_one(".result__snippet")
+                if not link_el:
+                    continue
+
+                href = (link_el.get("href") or "").strip()
+                title = link_el.get_text(" ", strip=True)
+                snippet = snip_el.get_text(" ", strip=True) if snip_el else ""
+                if not title:
+                    continue
+
+                items.append({
+                    "title": title,
+                    "url": href,
+                    "snippet": snippet,
+                })
+                if len(items) >= limit:
+                    break
+
+            return items
+        except Exception:  # noqa: BLE001
+            return []
+
     def generate_power_content(
         self,
         user_request: str,
@@ -211,6 +265,7 @@ class ContentEngine:
         primary_keyword = keywords[0] if keywords else user_request
         style_context = self._get_style_context()
         related_context = self._get_related_site_context(user_request, keywords)
+        serp_snapshot = self._get_serp_competitor_snapshot(user_request, primary_keyword)
 
         # 1) Plan using speed-focused model
         plan_prompt = (
@@ -222,7 +277,9 @@ class ContentEngine:
             f"Keywords: {', '.join(keywords) if keywords else user_request}\n\n"
             f"Learned style profile: {json.dumps(style_context)}\n\n"
             f"Related site context (for internal linking and voice consistency):\n"
-            f"{json.dumps(related_context)[:3000]}"
+            f"{json.dumps(related_context)[:3000]}\n\n"
+            f"SERP competitor snapshot (avoid generic overlap, improve angle/depth):\n"
+            f"{json.dumps(serp_snapshot)[:3000]}"
         )
         planner_brain = self.brain.route("content_plan", len(plan_prompt), priority="speed")
         plan_raw = self.brain.generate(
@@ -249,6 +306,7 @@ class ContentEngine:
             "Return clean HTML only. Include strong intro, rich sections, examples, FAQ, and CTA.\n\n"
             f"Plan JSON:\n{json.dumps(plan)}\n\n"
             f"Related site context:\n{json.dumps(related_context)[:3000]}\n\n"
+            f"SERP competitor snapshot:\n{json.dumps(serp_snapshot)[:3000]}\n\n"
             f"Style profile:\n{json.dumps(style_context)}\n\n"
             f"Mandatory constraints: target {word_count} words, audience={target_audience}, style={style}."
         )
@@ -347,6 +405,7 @@ class ContentEngine:
             "rewrite_passes": rewrites,
             "plan": plan,
             "related_context": related_context,
+            "serp_competitors": serp_snapshot,
             "generated_at": datetime.utcnow().isoformat(),
         }
 
@@ -393,6 +452,7 @@ class ContentEngine:
             "schema_faq_jsonld": result.get("schema_faq_jsonld", ""),
             "plan": result.get("plan", {}),
             "related_context": result.get("related_context", []),
+            "serp_competitors": result.get("serp_competitors", []),
             "rewrite_passes": result.get("rewrite_passes", 0),
         }
 
