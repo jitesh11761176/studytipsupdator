@@ -1,0 +1,51 @@
+# Core HTTP
+requests>=2.31.0
+httpx>=0.27.0
+urllib3>=2.0.0
+
+# Environment & config
+python-dotenv>=1.0.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Streamlit dashboard
+streamlit>=1.35.0
+
+# Telegram bot
+python-telegram-bot>=21.0.0
+
+# OpenAI-compatible SDK (OpenRouter, NVIDIA)
+openai>=1.30.0
+
+# Google APIs
+google-api-python-client>=2.130.0
+google-auth>=2.29.0
+google-auth-httplib2>=0.2.0
+google-analytics-data>=0.18.0
+
+# HTML parsing (site audit, SEO)
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+
+# Image processing
+Pillow>=10.3.0
+
+# Document processing (PDF, Word, Excel, Markdown, diff)
+PyPDF2>=3.0.0
+python-docx>=1.0.0
+openpyxl>=3.1.0
+pandas>=2.0.0
+html2text>=2024.2.26
+markdown>=3.5
+diff-match-patch>=20230430
+
+# CLI formatting
+rich>=13.7.0
+
+# Testing
+pytest>=8.2.0
+pytest-mock>=3.14.0
+
+# Type hints runtime
+typing-extensions>=4.11.0

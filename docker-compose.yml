@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  agent-dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: always
+    depends_on:
+      - ollama
+
+  telegram-bot:
+    build: .
+    command: python -c "from agent.interfaces.telegram_bot import run_bot; run_bot()"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: always
+    depends_on:
+      - ollama
+
+  scheduler:
+    build: .
+    command: python agent/scheduler.py
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: always
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama-models:
