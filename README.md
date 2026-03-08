@@ -68,8 +68,8 @@
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/chottelal/studytipsengine.git
-cd studytipsengine
+git clone https://github.com/jitesh11761176/studytipsupdator.git
+cd studytipsupdator
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
