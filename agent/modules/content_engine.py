@@ -22,20 +22,29 @@ BLOG_POST_SYSTEM_PROMPT = (
 PIPELINE_PLAN_PROMPT = (
     "You are a senior content strategist for studytips.in. "
     "Create a concise but high-impact plan for the requested article/page. "
+    "Think deeply about user intent, ranking opportunities, interactivity, and retention loops. "
     "Return ONLY valid JSON with keys: title, slug, focus_keyword, secondary_keywords, "
     "search_intent, audience, outline (array of H2 objects with optional h3 array), "
-    "faq_questions (array), and internal_link_topics (array)."
+    "interactive_modules (array), faq_questions (array), and internal_link_topics (array)."
 )
 
 PIPELINE_CRITIC_PROMPT = (
     "You are a strict editorial reviewer. Score this draft and return ONLY valid JSON with keys: "
     "seo_score (0-100), readability_score (0-100), depth_score (0-100), uniqueness_score (0-100), "
-    "factual_confidence (0-100), weak_sections (array of strings), and rewrite_instructions (array of strings)."
+    "factual_confidence (0-100), design_score (0-100), interactivity_score (0-100), "
+    "weak_sections (array of strings), and rewrite_instructions (array of strings)."
 )
 
 PIPELINE_REWRITE_PROMPT = (
     "You are a principal editor. Rewrite and improve the draft according to critique feedback. "
     "Preserve strengths, fix weak sections, and return clean WordPress-compatible HTML only."
+)
+
+INTERACTIVE_PAGE_REQUIREMENTS = (
+    "For pages and rich content, include visually expressive design and meaningful interactivity. "
+    "You MUST include: a gradient hero, card/grid sections, bold color system, at least one attemptable quiz "
+    "(radio options + submit/check button + score/result feedback), and one mini interactive practice block "
+    "(e.g. flashcard reveal, checklist progress, or step tracker). Use vanilla HTML/CSS/JS only."
 )
 
 
@@ -151,12 +160,66 @@ class ContentEngine:
             "depth_score": 70,
             "uniqueness_score": 65,
             "factual_confidence": 65,
+            "design_score": 60,
+            "interactivity_score": 55,
         }
         for key, min_score in gates.items():
             value = int(report.get(key, 0) or 0)
             if value < min_score:
                 return False
         return True
+
+    def _ensure_attemptable_quiz(self, html: str, topic: str) -> str:
+        """Ensure generated HTML contains a runnable quiz widget.
+
+        If model output misses interactive quiz controls, inject a compact,
+        self-contained quiz section with JS scoring.
+        """
+        lower = html.lower()
+        has_quiz_label = "quiz" in lower
+        has_attempt_controls = ("type=\"radio\"" in lower or "type='radio'" in lower) and (
+            "onclick=\"checkquiz" in lower or "id=\"quiz-result\"" in lower or "quiz-result" in lower
+        )
+
+        if has_quiz_label and has_attempt_controls:
+            return html
+
+        safe_topic = re.sub(r"[^a-zA-Z0-9\s-]", "", topic).strip() or "Study Skills"
+        quiz_block = (
+            "\n<section class=\"quiz-card\" style=\"margin:2rem 0;padding:1.25rem;border-radius:14px;"
+            "background:linear-gradient(135deg,#fff7e6,#eef7ff);border:1px solid #d8e8ff;\">"
+            f"<h2 style=\"margin-top:0;\">Quick Quiz: {safe_topic}</h2>"
+            "<p>Attempt this short quiz to test your understanding.</p>"
+            "<div class=\"quiz-q\" style=\"margin:1rem 0;\">"
+            "<p><strong>1. Which method improves retention the most?</strong></p>"
+            "<label><input type=\"radio\" name=\"q1\" value=\"a\"> Passive rereading only</label><br>"
+            "<label><input type=\"radio\" name=\"q1\" value=\"b\"> Active recall + spaced revision</label><br>"
+            "<label><input type=\"radio\" name=\"q1\" value=\"c\"> Last-night cramming</label>"
+            "</div>"
+            "<div class=\"quiz-q\" style=\"margin:1rem 0;\">"
+            "<p><strong>2. A practical daily study session should include:</strong></p>"
+            "<label><input type=\"radio\" name=\"q2\" value=\"a\"> Clear goals, focused blocks, short review</label><br>"
+            "<label><input type=\"radio\" name=\"q2\" value=\"b\"> Random topics without planning</label><br>"
+            "<label><input type=\"radio\" name=\"q2\" value=\"c\"> Only watching videos</label>"
+            "</div>"
+            "<button type=\"button\" onclick=\"checkQuizInteractive()\" style=\"padding:.65rem 1rem;border:none;"
+            "border-radius:10px;background:#0b5fff;color:#fff;cursor:pointer;\">Check Score</button>"
+            "<p id=\"quiz-result\" style=\"font-weight:600;margin-top:.9rem;\"></p>"
+            "<script>"
+            "function checkQuizInteractive(){"
+            "let score=0;"
+            "const q1=document.querySelector('input[name=\\\"q1\\\"]:checked');"
+            "const q2=document.querySelector('input[name=\\\"q2\\\"]:checked');"
+            "if(q1&&q1.value==='b')score++;"
+            "if(q2&&q2.value==='a')score++;"
+            "const out=document.getElementById('quiz-result');"
+            "if(!q1||!q2){out.textContent='Please answer all questions first.';out.style.color='#b54708';return;}"
+            "out.textContent='Your score: '+score+'/2';"
+            "out.style.color=score===2?'#067647':'#175cd3';"
+            "}"
+            "</script></section>"
+        )
+        return html + quiz_block
 
     def _build_publish_assets(
         self,
@@ -295,6 +358,7 @@ class ContentEngine:
             "search_intent": "informational",
             "audience": target_audience,
             "outline": [],
+            "interactive_modules": ["attemptable quiz", "progress checklist"],
             "faq_questions": [],
             "internal_link_topics": [],
         }
@@ -304,6 +368,7 @@ class ContentEngine:
         writer_prompt = (
             "Write a publish-ready educational WordPress article/page using the approved plan. "
             "Return clean HTML only. Include strong intro, rich sections, examples, FAQ, and CTA.\n\n"
+            f"Interactive/visual requirements:\n{INTERACTIVE_PAGE_REQUIREMENTS}\n\n"
             f"Plan JSON:\n{json.dumps(plan)}\n\n"
             f"Related site context:\n{json.dumps(related_context)[:3000]}\n\n"
             f"SERP competitor snapshot:\n{json.dumps(serp_snapshot)[:3000]}\n\n"
@@ -350,6 +415,7 @@ class ContentEngine:
                 f"User request: {user_request}\n\n"
                 f"Plan:\n{json.dumps(plan)}\n\n"
                 f"Critique:\n{json.dumps(critique)}\n\n"
+                f"You MUST satisfy these interactive/visual requirements:\n{INTERACTIVE_PAGE_REQUIREMENTS}\n\n"
                 f"Draft HTML:\n{draft[:10000]}"
             )
             rewrite_brain = self.brain.route("update_content", len(rewrite_prompt), priority="quality")
@@ -374,6 +440,8 @@ class ContentEngine:
                 system_prompt=PIPELINE_CRITIC_PROMPT,
             )
             critique = self._extract_json_object(critique_raw, critique)
+
+        final_html = self._ensure_attemptable_quiz(final_html, user_request)
 
         title = plan.get("title") or user_request[:80]
         slug = plan.get("slug") or self._safe_slug(title)
