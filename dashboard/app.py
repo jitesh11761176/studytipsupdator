@@ -325,13 +325,16 @@ with tabs[0]:
                 st.error(f"Error: {exc}")
 
     if agent_prompt and gen_smart_btn:
-        # Smart Generate: use the rich page prompt to create beautiful styled HTML
+        # Smart Generate: use the multi-pass planner/writer/critic pipeline
         with st.spinner("🎨 AI is generating a beautiful styled page…"):
             try:
-                from agent.prompts.content_prompts import RICH_PAGE_PROMPT
+                from agent.core.config import load_config
+                from agent.modules.content_engine import ContentEngine
                 import re as _re
 
                 brain = _get_brain_router()
+                cfg = load_config()
+                engine = ContentEngine(brain_router=brain, config=cfg)
 
                 # Try to fetch a reference page for context
                 reference_info = ""
@@ -367,39 +370,50 @@ with tabs[0]:
                         except Exception:
                             pass
 
-                brain_name = brain.route("create_content", priority="quality")
-                content = brain.generate(
-                    brain_name=brain_name,
-                    prompt=RICH_PAGE_PROMPT.format(
-                        user_request=agent_prompt,
-                        reference_info=reference_info,
-                    ),
-                )
-                # Clean markdown fences if AI wrapped it
-                content = _re.sub(r'^```(?:html)?\s*\n?', '', content.strip())
-                content = _re.sub(r'\n?```\s*$', '', content.strip())
+                effective_request = agent_prompt
+                if reference_info:
+                    effective_request += (
+                        "\n\nReference design/page context to follow closely:\n"
+                        + reference_info[:5000]
+                    )
 
-                # Extract title from content or prompt
-                title_match = _re.search(r'<h1[^>]*>(.*?)</h1>', content, _re.IGNORECASE | _re.DOTALL)
-                suggested_title = title_match.group(1).strip() if title_match else agent_prompt[:80]
-                # Clean HTML tags from title
-                suggested_title = _re.sub(r'<[^>]+>', '', suggested_title)
-                suggested_slug = _re.sub(r'[^a-z0-9]+', '-', suggested_title.lower()).strip('-')
+                power_result = engine.generate_power_content(
+                    user_request=effective_request,
+                    target_type="page",
+                    word_count=1600,
+                    style="visually rich and authoritative",
+                    target_audience="students and parents",
+                )
+                content = power_result.get("content", "")
+                suggested_title = power_result.get("title", agent_prompt[:80])
+                suggested_slug = power_result.get("slug", "")
+                quality = power_result.get("quality_report", {})
 
                 st.session_state["studio_result"] = {
                     "raw_text": content,
                     "html_content": content,
                     "suggested_title": suggested_title,
                     "suggested_slug": suggested_slug,
-                    "suggested_meta_description": "",
-                    "suggested_tags": [],
+                    "suggested_meta_description": power_result.get("meta_description", ""),
+                    "suggested_tags": power_result.get("tags", []),
                     "suggested_headings": [],
-                    "seo_score": 0,
-                    "readability_score": 0,
+                    "seo_score": int(quality.get("seo_score", 0) or 0),
+                    "readability_score": int(quality.get("readability_score", 0) or 0),
                     "word_count": len(content.split()),
                     "image_prompt": "",
+                    "quality_report": quality,
+                    "quality_passed": power_result.get("quality_passed", False),
+                    "rewrite_passes": power_result.get("rewrite_passes", 0),
+                    "internal_links": power_result.get("internal_links", []),
+                    "faq": power_result.get("faq", []),
+                    "schema_faq_jsonld": power_result.get("schema_faq_jsonld", ""),
                 }
-                st.success(f"✅ Beautiful page generated! **{suggested_title}** — Preview below, then publish.")
+                if power_result.get("quality_passed"):
+                    st.success(f"✅ High-quality page generated! **{suggested_title}** — Preview below, then publish.")
+                else:
+                    st.warning(
+                        "Generated with quality warnings. Review preview and run one more tweak pass if needed."
+                    )
             except Exception as exc:
                 st.error(f"Smart generate failed: {exc}")
 
@@ -617,6 +631,21 @@ with tabs[0]:
         col1.metric("Word Count", res.get("word_count", 0))
         col2.metric("SEO Score", f"{res.get('seo_score', 0)}/100")
         col3.metric("Readability", f"{res.get('readability_score', 0)}/100")
+
+        if res.get("quality_report"):
+            with st.expander("🧪 Quality Gate Report", expanded=False):
+                q = res.get("quality_report", {})
+                st.write({
+                    "SEO": q.get("seo_score", 0),
+                    "Readability": q.get("readability_score", 0),
+                    "Depth": q.get("depth_score", 0),
+                    "Uniqueness": q.get("uniqueness_score", 0),
+                    "Factual Confidence": q.get("factual_confidence", 0),
+                    "Weak Sections": q.get("weak_sections", []),
+                    "Rewrite Instructions": q.get("rewrite_instructions", []),
+                    "Passed": bool(res.get("quality_passed", False)),
+                    "Rewrite Passes": int(res.get("rewrite_passes", 0)),
+                })
 
         with st.expander("✏️ Edit SEO Fields", expanded=True):
             res["suggested_title"] = st.text_input(

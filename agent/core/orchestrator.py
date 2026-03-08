@@ -316,37 +316,39 @@ class StudyTipsAgent:
 
         # === Content creation ===
         if any(kw in step_lower for kw in ["write", "generate", "draft", "create post", "create article"]):
-            from agent.prompts.content_prompts import SMART_CONTENT_PROMPT
-            brain_name = self.brain.route("create_content", priority="quality")
-            content = self.brain.generate(
-                brain_name=brain_name,
-                prompt=SMART_CONTENT_PROMPT.format(user_request=step),
+            from agent.modules.content_engine import ContentEngine
+
+            engine = ContentEngine(brain_router=self.brain, config=self.config)
+            generated = engine.generate_power_content(
+                user_request=step,
+                target_type="post",
+                word_count=1400,
+                style="informative",
+                target_audience="students",
             )
-            import re as _re
-            content = _re.sub(r'^```(?:html)?\s*\n?', '', content.strip())
-            content = _re.sub(r'\n?```\s*$', '', content.strip())
-            return content
+            return generated.get("content", "")
 
         # === Page creation (with auto-parent detection) ===
         if intent == "create_page" or any(kw in step_lower for kw in ["create page", "new page"]):
             from agent.modules.site_power import SitePower
-            from agent.prompts.content_prompts import RICH_PAGE_PROMPT
+            from agent.modules.content_engine import ContentEngine
+
             power = SitePower(brain_router=self.brain, config=self.config)
+            engine = ContentEngine(brain_router=self.brain, config=self.config)
             # Extract title from step
             title = step.replace("create page", "").replace("new page", "").strip().strip('"\'')
             if not title:
                 title = step
-            brain_name = self.brain.route("create_content", priority="quality")
-            content = self.brain.generate(
-                brain_name=brain_name,
-                prompt=RICH_PAGE_PROMPT.format(
-                    user_request=title,
-                    reference_info="This is for studytips.in educational website. Create production-ready content.",
-                ),
+
+            generated = engine.generate_power_content(
+                user_request=title,
+                target_type="page",
+                word_count=1600,
+                style="visually rich and authoritative",
+                target_audience="students and parents",
             )
-            import re as _re
-            content = _re.sub(r'^```(?:html)?\s*\n?', '', content.strip())
-            content = _re.sub(r'\n?```\s*$', '', content.strip())
+            content = generated.get("content", "")
+
             wp = self._wp_client()
             pages = power._fetch_all(wp, "pages", "publish")
             parent_id = power._find_best_parent(title, power._simplify_list(pages))
